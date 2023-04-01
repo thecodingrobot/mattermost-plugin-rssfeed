@@ -209,7 +209,17 @@ func (p *RSSFeedPlugin) processSubscription(subscription *Subscription) error {
 func (p *RSSFeedPlugin) createBotPost(channelID string, feed *gofeed.Feed, feedItem *gofeed.Item) error {
 	converter := html2md.NewConverter("", true, nil)
 
-	description, _ := converter.ConvertString(feedItem.Description)
+	description, err := converter.ConvertString(feedItem.Description)
+	if err != nil {
+		p.API.LogError(err.Error())
+		description = ""
+	}
+
+	content, err := converter.ConvertString(feedItem.Content)
+	if err != nil {
+		p.API.LogError(err.Error())
+		content = ""
+	}
 	post := &model.Post{
 		UserId:    p.botUserID,
 		ChannelId: channelID,
@@ -219,7 +229,7 @@ func (p *RSSFeedPlugin) createBotPost(channelID string, feed *gofeed.Feed, feedI
 				{
 					Title:      feedItem.Title,
 					TitleLink:  feedItem.Link,
-					Text:       description,
+					Text:       description + "\n" + content,
 					Timestamp:  feedItem.Published,
 					AuthorName: feed.Title,
 					AuthorLink: feed.Link,
