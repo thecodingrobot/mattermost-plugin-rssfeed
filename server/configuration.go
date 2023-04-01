@@ -1,9 +1,8 @@
 package main
 
 import (
+	"fmt"
 	"reflect"
-
-	"github.com/pkg/errors"
 )
 
 // configuration captures the plugin's external configuration as exposed in the Mattermost server
@@ -83,7 +82,7 @@ func (p *RSSFeedPlugin) OnConfigurationChange() error {
 
 	// Load the public configuration fields from the Mattermost server configuration.
 	if err := p.API.LoadPluginConfiguration(configuration); err != nil {
-		return errors.Wrap(err, "failed to load plugin configuration")
+		return fmt.Errorf("failed to load plugin configuration: %w", err)
 	}
 
 	p.setConfiguration(configuration)

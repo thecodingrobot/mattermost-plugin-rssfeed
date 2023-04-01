@@ -4,7 +4,7 @@ CURL ?= $(shell command -v curl 2> /dev/null)
 MANIFEST_FILE ?= plugin.json
 GOPATH ?= $(shell go env GOPATH)
 GO_TEST_FLAGS ?= -race
-GO_BUILD_FLAGS ?=
+GO_BUILD_FLAGS ?= -ldflags="-extldflags=-static"
 MM_UTILITIES_DIR ?= ../mattermost-utilities
 
 export GO111MODULE=on

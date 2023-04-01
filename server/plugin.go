@@ -1,24 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
-	"fmt"
-	"io/ioutil"
 	"net/http"
+	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/lunny/html2md"
-	"github.com/mattermost/mattermost-server/v5/model"
-	"github.com/mattermost/mattermost-server/v5/plugin"
-	atomparser "github.com/wbernest/atom-parser"
-	rssv2parser "github.com/wbernest/rss-v2-parser"
-	"golang.org/x/tools/blog/atom"
+	html2md "github.com/JohannesKaufmann/html-to-markdown"
+	"github.com/mattermost/mattermost-server/v6/model"
+	"github.com/mattermost/mattermost-server/v6/plugin"
+	"github.com/mmcdole/gofeed"
 )
-
-//const RSSFEED_ICON_URL = "./plugins/rssfeed/assets/rss.png"
 
 // RSSFeedPlugin Object
 type RSSFeedPlugin struct {
@@ -39,7 +35,7 @@ type RSSFeedPlugin struct {
 func (p *RSSFeedPlugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
 	switch path := r.URL.Path; path {
 	case "/images/rss.png":
-		data, err := ioutil.ReadFile(string("plugins/rssfeed/assets/rss.png"))
+		data, err := os.ReadFile(string("plugins/rssfeed/assets/rss.png"))
 		if err == nil {
 			w.Header().Set("Content-Type", "image/png")
 			w.Write(data)
@@ -90,196 +86,146 @@ func (p *RSSFeedPlugin) processHeartBeat() error {
 
 func (p *RSSFeedPlugin) getHeartbeatTime() (int, error) {
 	config := p.getConfiguration()
-	heartbeatTime := 15
+	heartbeatTime := 5
 	var err error
 	if len(config.Heartbeat) > 0 {
 		heartbeatTime, err = strconv.Atoi(config.Heartbeat)
 		if err != nil {
-			return 15, err
+			return 5, err
 		}
 	}
 
 	return heartbeatTime, nil
 }
 
-func (p *RSSFeedPlugin) processSubscription(subscription *Subscription) error {
+func fetch(feedURL string, ctx context.Context) (feed string, err error) {
+	client := &http.Client{}
 
+	req, err := http.NewRequestWithContext(ctx, "GET", feedURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := client.Do(req)
+
+	if err != nil {
+		return "", err
+	}
+
+	if resp != nil {
+		defer func() {
+			ce := resp.Body.Close()
+			if ce != nil {
+				err = ce
+			}
+		}()
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", gofeed.HTTPError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+		}
+	}
+
+	var buf bytes.Buffer
+	_, err = buf.ReadFrom(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// CompareItemsBetweenOldAndNew - This function will used to compare 2 atom xml event objects
+// and will return a list of items that are specifically in the newer feed but not in
+// the older feed
+func CompareItemsBetweenOldAndNew(feedOld *gofeed.Feed, feedNew *gofeed.Feed) []*gofeed.Item {
+	itemList := []*gofeed.Item{}
+
+	for _, item1 := range feedNew.Items {
+		exists := false
+		for _, item2 := range feedOld.Items {
+			if item1.GUID == item2.GUID {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			itemList = append(itemList, item1)
+		}
+	}
+	return itemList
+}
+
+func (p *RSSFeedPlugin) processSubscription(subscription *Subscription) error {
 	if len(subscription.URL) == 0 {
 		return errors.New("no url supplied")
 	}
 
-	if rssv2parser.IsValidFeed(subscription.URL) {
-		err := p.processRSSV2Subscription(subscription)
-		if err != nil {
-			return fmt.Errorf("invalid RSS v2 feed format for %s - %s", subscription.URL, err.Error())
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
-	} else if atomparser.IsValidFeed(subscription.URL) {
-		err := p.processAtomSubscription(subscription)
-		if err != nil {
-			return fmt.Errorf("invalid atom feed format for %s - %s", subscription.URL, err.Error())
-		}
-	} else {
-		return fmt.Errorf("invalid feed format for subscription: %s", subscription.URL)
+	feedXml, err := fetch(subscription.URL, ctx)
+	if err != nil {
+		return err
 	}
 
-	return nil
-}
-
-func (p *RSSFeedPlugin) processRSSV2Subscription(subscription *Subscription) error {
-	config := p.getConfiguration()
-
-	// get new rss feed string from url
-	newRssFeed, newRssFeedString, err := rssv2parser.ParseURL(subscription.URL)
+	fp := gofeed.NewParser()
+	newFeed, err := fp.ParseString(feedXml)
 	if err != nil {
 		return err
 	}
 
 	// retrieve old xml feed from database
-	oldRssFeed, err := rssv2parser.ParseString(subscription.XML)
-	if err != nil {
-		return err
+	var oldFeed *gofeed.Feed
+	if len(subscription.XML) == 0 {
+		oldFeed = &gofeed.Feed{}
+	} else {
+		oldFeed, err = fp.ParseString(subscription.XML)
+		if err != nil {
+			return err
+		}
 	}
-
-	items := rssv2parser.CompareItemsBetweenOldAndNew(oldRssFeed, newRssFeed)
+	items := CompareItemsBetweenOldAndNew(oldFeed, newFeed)
 
 	// if this is a new subscription only post the latest
 	// and not spam the channel
-	if len(oldRssFeed.Channel.ItemList) == 0 && len(items) > 0 {
+	if len(oldFeed.Items) == 0 && len(items) > 0 {
 		items = items[:1]
 	}
 
 	for _, item := range items {
-		post := ""
-
-		if config.FormatTitle {
-			post = post + "##### "
-		}
-		post = post + newRssFeed.Channel.Title + "\n"
-
-		if config.ShowRSSItemTitle {
-			if config.FormatTitle {
-				post = post + "###### "
-			}
-			post = post + item.Title + "\n"
-		}
-
-		if config.ShowRSSLink {
-			post = post + strings.TrimSpace(item.Link) + "\n"
-		}
-		if config.ShowDescription {
-			post = post + html2md.Convert(item.Description) + "\n"
-		}
-
-		p.createBotPost(subscription.ChannelID, post, "custom_git_pr")
+		p.createBotPost(subscription.ChannelID, newFeed, item)
 	}
 
 	if len(items) > 0 {
-		subscription.XML = newRssFeedString
+		subscription.XML = feedXml
 		p.updateSubscription(subscription)
 	}
 
 	return nil
 }
 
-func (p *RSSFeedPlugin) processAtomSubscription(subscription *Subscription) error {
-	config := p.getConfiguration()
+func (p *RSSFeedPlugin) createBotPost(channelID string, feed *gofeed.Feed, feedItem *gofeed.Item) error {
+	converter := html2md.NewConverter("", true, nil)
 
-	// get new rss feed string from url
-	newFeed, newFeedString, err := atomparser.ParseURL(subscription.URL)
-	if err != nil {
-		return err
-	}
-
-	// retrieve old xml feed from database
-	oldFeed, err := atomparser.ParseString(subscription.XML)
-	if err != nil {
-		return err
-	}
-
-	items := atomparser.CompareItemsBetweenOldAndNew(oldFeed, newFeed)
-
-	// if this is a new subscription only post the latest
-	// and not spam the channel
-	if len(oldFeed.Entry) == 0 && len(items) > 0 {
-		items = items[:1]
-	}
-
-	for _, item := range items {
-		post := ""
-
-		if config.FormatTitle {
-			post = post + "##### "
-		}
-		post = post + newFeed.Title + "\n"
-
-		if config.ShowAtomItemTitle {
-			if config.FormatTitle {
-				post = post + "###### "
-			}
-			post = post + item.Title + "\n"
-		}
-
-		if config.ShowAtomLink {
-			for _, link := range item.Link {
-				if link.Rel == "alternate" {
-					post = post + strings.TrimSpace(link.Href) + "\n"
-				}
-			}
-		}
-
-		if config.ShowSummary {
-			if !tryParseRichNode(item.Summary, &post) {
-				p.API.LogInfo("Missing summary in atom feed item",
-					"subscription_url", subscription.URL,
-					"item_title", item.Title)
-				post = post + "\n"
-			}
-		}
-
-		if config.ShowContent {
-			if !tryParseRichNode(item.Content, &post) {
-				p.API.LogInfo("Missing content in atom feed item",
-					"subscription_url", subscription.URL,
-					"item_title", item.Title)
-				post = post + "\n"
-			}
-		}
-
-		p.createBotPost(subscription.ChannelID, post, "custom_git_pr")
-	}
-
-	if len(items) > 0 {
-		subscription.XML = newFeedString
-		p.updateSubscription(subscription)
-	}
-
-	return nil
-}
-
-func tryParseRichNode(node *atom.Text, post *string) bool {
-	if node != nil {
-		if node.Type != "text" {
-			*post = *post + html2md.Convert(strings.TrimSpace(node.Body)) + "\n"
-		} else {
-			*post = *post + node.Body + "\n"
-		}
-		return true
-	} else {
-		return false
-	}
-}
-
-func (p *RSSFeedPlugin) createBotPost(channelID string, message string, postType string) error {
+	description, _ := converter.ConvertString(feedItem.Description)
 	post := &model.Post{
 		UserId:    p.botUserID,
 		ChannelId: channelID,
-		Message:   message,
-		Type:      postType,
-		/*Props: map[string]interface{}{
-			"from_webhook":      "true",
-			"override_username": botDisplayName,
-		},*/
+		Type:      model.PostTypeSlackAttachment,
+		Props: map[string]interface{}{
+			"attachments": []*model.SlackAttachment{
+				{
+					Title:      feedItem.Title,
+					TitleLink:  feedItem.Link,
+					Text:       description,
+					Timestamp:  feedItem.Published,
+					AuthorName: feed.Title,
+					AuthorLink: feed.Link,
+				},
+			},
+		},
 	}
 
 	if _, err := p.API.CreatePost(post); err != nil {

@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/mattermost/mattermost-server/v5/model"
-	"github.com/mattermost/mattermost-server/v5/plugin"
-	"github.com/mattermost/mattermost-server/v5/shared/mlog"
 	"strings"
+
+	"github.com/mattermost/mattermost-server/v6/model"
+	"github.com/mattermost/mattermost-server/v6/plugin"
+	"github.com/mattermost/mattermost-server/v6/shared/mlog"
 )
 
 // COMMAND_HELP is the text you see when you type /feed help
@@ -31,7 +32,7 @@ func getCommandResponse(responseType, text string) *model.CommandResponse {
 		Text:         text,
 		Username:     botDisplayName,
 		IconURL:      RSSFEED_ICON_URL,
-		Type:         model.POST_DEFAULT,
+		Type:         model.PostTypeDefault,
 	}
 }
 
@@ -58,7 +59,7 @@ func (p *RSSFeedPlugin) ExecuteCommand(c *plugin.Context, args *model.CommandArg
 		txt := "### Subscriptions in this channel\n"
 		subscriptions, err := p.getSubscriptions()
 		if err != nil {
-			return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, err.Error()), nil
+			return getCommandResponse(model.CommandResponseTypeEphemeral, err.Error()), nil
 		}
 
 		for _, value := range subscriptions.Subscriptions {
@@ -66,42 +67,42 @@ func (p *RSSFeedPlugin) ExecuteCommand(c *plugin.Context, args *model.CommandArg
 				txt += fmt.Sprintf("* `%s`\n", value.URL)
 			}
 		}
-		return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, txt), nil
+		return getCommandResponse(model.CommandResponseTypeEphemeral, txt), nil
 	case "subscribe", "sub":
 
 		if len(parameters) == 0 {
-			return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, "Please specify a url."), nil
+			return getCommandResponse(model.CommandResponseTypeEphemeral, "Please specify a url."), nil
 		} else if len(parameters) > 1 {
-			return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, "Please specify a valid url."), nil
+			return getCommandResponse(model.CommandResponseTypeEphemeral, "Please specify a valid url."), nil
 		}
 
 		url := parameters[0]
 
 		if err := p.subscribe(context.Background(), args.ChannelId, url); err != nil {
-			return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, err.Error()), nil
+			return getCommandResponse(model.CommandResponseTypeEphemeral, err.Error()), nil
 		}
 
-		return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, fmt.Sprintf("Successfully subscribed to %s.", url)), nil
+		return getCommandResponse(model.CommandResponseTypeEphemeral, fmt.Sprintf("Successfully subscribed to %s.", url)), nil
 	case "unsubscribe", "unsub":
 		if len(parameters) == 0 {
-			return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, "Please specify a url."), nil
+			return getCommandResponse(model.CommandResponseTypeEphemeral, "Please specify a url."), nil
 		} else if len(parameters) > 1 {
-			return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, "Please specify a valid url."), nil
+			return getCommandResponse(model.CommandResponseTypeEphemeral, "Please specify a valid url."), nil
 		}
 
 		url := parameters[0]
 
 		if err := p.unsubscribe(args.ChannelId, url); err != nil {
 			mlog.Error(err.Error())
-			return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, "Encountered an error trying to unsubscribe. Please try again."), nil
+			return getCommandResponse(model.CommandResponseTypeEphemeral, "Encountered an error trying to unsubscribe. Please try again."), nil
 		}
 
-		return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, fmt.Sprintf("Succesfully unsubscribed from %s.", url)), nil
+		return getCommandResponse(model.CommandResponseTypeEphemeral, fmt.Sprintf("Succesfully unsubscribed from %s.", url)), nil
 	case "help":
 		text := "###### Mattermost RSSFeed Plugin - Slash Command Help\n" + strings.Replace(COMMAND_HELP, "|", "`", -1)
-		return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, text), nil
+		return getCommandResponse(model.CommandResponseTypeEphemeral, text), nil
 	default:
 		text := "###### Mattermost RSSFeed Plugin - Slash Command Help\n" + strings.Replace(COMMAND_HELP, "|", "`", -1)
-		return getCommandResponse(model.COMMAND_RESPONSE_TYPE_EPHEMERAL, text), nil
+		return getCommandResponse(model.CommandResponseTypeEphemeral, text), nil
 	}
 }
